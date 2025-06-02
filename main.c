@@ -57,35 +57,6 @@ set(int argc, char **argv, libusb_device_handle *dev_handle, int packet_id) {
         return -1;
     }
 }
-#define BATTERY_CHARGING 0x65
-int 
-initial_query(libusb_device_handle *dev_handle, int *packet_id) {
-    int i = 1;
-    while(1) {
-        if(i == 0) {
-            return 0;
-        }
-        unsigned char data[] = {0xc, 0x1, 0x20, 0x0, 0x1, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0};
-        data[4] = i++;
-        int n = libusb_control_transfer(dev_handle, 0x21, 0x9, 0x30c, 1, data, 33, 0);
-        unsigned char buf[33] = {0};
-        n = libusb_control_transfer(dev_handle, 0xa1, 0x1, 0x30c, 1, buf, 33, 0);
-        if(n < 0) {
-            return n;
-        }
-        for(int j = 0; j < 33; j++) {
-            printf("%02x ", buf[j]);
-        }
-        printf("\n");
-        if(buf[18]) {
-            *packet_id = i - 1;
-            if(buf[19] == 1) {
-                return BATTERY_CHARGING;
-            }
-            return buf[18];
-        }
-    }
-}
 int 
 main(int argc, char **argv) {
     if(argc < 2) {
@@ -139,6 +110,7 @@ main(int argc, char **argv) {
         printf("%i\n", data[4] * 10);
     } else if(strcmp("set", argv[1]) == 0) {
         res = set(argc-2, argv+2, dev_handle, 0);
+        if(res >= 0) res = libusb_interrupt_transfer(dev_handle, 0x83, data, 64, &transferred, 0);
     } else {
         usage();
     }
