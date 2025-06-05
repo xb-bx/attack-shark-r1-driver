@@ -1,0 +1,6 @@
+[submodule "libusb"]
+	path = libusb
+	url = https://git.bfpower.io/BFPOWER/libusb-odin.git
+[submodule "ini"]
+	path = ini
+	url = https://github.com/laytan/odin-ini-parser
