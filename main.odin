@@ -13,9 +13,12 @@ import "core:flags"
 import "base:runtime"
 import "libusb"
 import "ini"
-VID :: 0x1d57
-PID :: 0xfa60
+VID       :: 0x1d57
+PID       :: 0xfa60
+WIRED_PID :: 0xfa61
 INTERFACE :: 2
+
+wired := false
 
 open_mouse :: proc(ctx: libusb.Context) -> (dev_handle: libusb.Device_Handle, has_kern_driver: bool, err: libusb.Error) {
     dev: libusb.Device = nil
@@ -25,8 +28,9 @@ open_mouse :: proc(ctx: libusb.Context) -> (dev_handle: libusb.Device_Handle, ha
     for idev in devs {
         desc: libusb.Device_Descriptor = {}
         if libusb.get_device_descriptor(idev, &desc) != .SUCCESS do continue
-        if desc.idProduct == PID && desc.idVendor == VID {
+        if desc.idProduct == PID && desc.idVendor == VID || desc.idProduct == WIRED_PID {
             dev = idev
+            wired = desc.idProduct == WIRED_PID
             break
         }
     } 
@@ -72,8 +76,11 @@ set_times :: proc (dev_handle: libusb.Device_Handle, sleep_time: f64, deep_sleep
         payload[12] = ((u8(deep_sleep) & 0xF + (u8(deep_sleep & 0xF0) >> 4) & 0xF) << 4) + 0xa + payload[9] + payload[10]
         ctrl_transfer(dev_handle, 0x21, 0x9, 0x305, INTERFACE, payload[:]) or_return
         buf := [5]u8{}
-        interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
-        if buf[2] == 0x50 do break
+        if !wired {
+            buf := [5]u8{}
+            interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
+            if buf[2] == 0x50 do break
+        } else do break
     }
     return nil
 }
@@ -104,7 +111,6 @@ set_dpis :: proc (dev_handle: libusb.Device_Handle, dpi: [6]int, active_dpi: int
         payload[6] = is_bigger_than12K
         payload[7] = is_bigger_than12K
         checksum += u16(is_bigger_than12K * 2)
-        //fmt.println(active_dpi)
         payload[24] = u8(active_dpi)
         checksum += u16(active_dpi - 1)
 
@@ -119,9 +125,11 @@ set_dpis :: proc (dev_handle: libusb.Device_Handle, dpi: [6]int, active_dpi: int
         (transmute(^u16be)&payload[50])^ = u16be(checksum)
 
         ctrl_transfer(dev_handle, 0x21, 0x9, 0x304, INTERFACE, payload[:]) or_return
-        buf := [5]u8{}
-        interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
-        if buf[2] == 0x50 do break
+        if !wired {
+            buf := [5]u8{}
+            interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
+            if buf[2] == 0x50 do break
+        } else do break
     }
     return nil
 }
@@ -132,8 +140,11 @@ set_polling_rate :: proc (dev_handle: libusb.Device_Handle, polling_rate: Pollin
         (transmute(^u16)&payload[3])^ = u16(polling_rate)
         ctrl_transfer(dev_handle, 0x21, 0x9, 0x306, INTERFACE, payload[:]) or_return
         buf := [5]u8{}
-        interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
-        if buf[2] == 0x50 do break
+        if !wired {
+            buf := [5]u8{}
+            interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
+            if buf[2] == 0x50 do break
+        } else do break
     }
     return nil
 }
@@ -297,7 +308,9 @@ driver_main :: proc(opts: CliOptions , config: ^Config) -> DriverError {
     if opts.reapply_config do apply_config(config^, mouse) or_return
     t := i32(0)
     buf := [5]u8{}
-    libusb.interrupt_transfer(mouse, 0x83, slice.as_ptr(buf[:]), 64, &t, 0) or_return
+    if !wired {
+        libusb.interrupt_transfer(mouse, 0x83, slice.as_ptr(buf[:]), 64, &t, 0) or_return
+    }
     if opts.query_charge do fmt.println(buf[4] * 10)
     
     if opts.polling_rate != 0 {
