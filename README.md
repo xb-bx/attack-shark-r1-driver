@@ -3,12 +3,12 @@ Capabilities:
 - [X] Get battery charge
 - [X] Set current polling rate
 - [ ] Remap keys
-- [ ] Set DPI
+- [X] Set DPI
 - [X] Set sleep time
 - [X] Set Deepsleep time
 - [X] Set key response time
-- [ ] Ripple control
-- [ ] Angle Snap
+- [X] Ripple control
+- [X] Angle Snap
 - [ ] Macros
 # Build requirements
     - odin

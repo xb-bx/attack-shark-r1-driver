@@ -1,7 +1,7 @@
-driver: main.odin
+driver: *.odin
 	odin build . -out:$@ -debug -error-pos-style:unix
 .PHONY: release 
-release: main.odin
+release: *.odin
 	odin build . -out:./driver -o:size
 DESTDIR ?= /
 .PHONY: install

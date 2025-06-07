@@ -77,6 +77,54 @@ set_times :: proc (dev_handle: libusb.Device_Handle, sleep_time: f64, deep_sleep
     }
     return nil
 }
+get_dpi_value :: proc(dpi: int) -> u8 {
+    assert(dpi >= 100 && dpi <= 18000) 
+    first6 := [?]u8 {2, 4, 6, 9, 11, 14}
+    index := dpi / 100 - 1
+
+    if index < 6 do return first6[index]
+    index -= 6
+    return u8(14 + ((index + 1) / 3) + (index + 1) * 2)
+}
+set_dpis :: proc (dev_handle: libusb.Device_Handle, dpi: [6]int, active_dpi: int, ripple_control: bool, angle_snap: bool) -> libusb.Error {
+    t := i32(0)
+    for {
+    payload := [?]u8{0x4, 0x38, 0x1, 0x0, 0x0, 0x3f, 0x0, 0x0, 0x2, 0x2, 0x2, 0x2, 0x2, 0x2, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x1, 0xff, 0x0, 0x0, 0x0, 0xff, 0x0, 0x0, 0x0, 0xff, 0xff, 0xff, 0x0, 0x0, 0xff, 0xff, 0xff, 0x0, 0xff, 0xff, 0x40, 0x0, 0xff, 0xff, 0xff, 0x2, 0xd, 0x75, 0x0, 0x0, 0x0, 0x0};
+        checksum := u16(u16(0x0d75))
+        is_bigger_than12K := u8(0)
+        for i in 0..<6 {
+            payload[i + 8] = u8(dpis[dpi[i]])
+            checksum += u16(u8(dpis[dpi[i]]))
+            payload[i+16] = dpi[i] >= 10100 && dpi[i] <= 12000 ? 1 : 0
+            checksum += dpi[i] >= 10100 && dpi[i] <= 12000 ? 1 : 0 
+            if dpi[i] > 12000 {
+                is_bigger_than12K |= 1 << u8(i)
+            }
+        }
+        payload[6] = is_bigger_than12K
+        payload[7] = is_bigger_than12K
+        checksum += u16(is_bigger_than12K * 2)
+        //fmt.println(active_dpi)
+        payload[24] = u8(active_dpi)
+        checksum += u16(active_dpi - 1)
+
+        if ripple_control {
+            checksum += 1
+            payload[4] = 1
+        }
+        if angle_snap {
+            checksum += 1
+            payload[3] = 1
+        }
+        (transmute(^u16be)&payload[50])^ = u16be(checksum)
+
+        ctrl_transfer(dev_handle, 0x21, 0x9, 0x304, INTERFACE, payload[:]) or_return
+        buf := [5]u8{}
+        interrupt_transfer(dev_handle, 0x83, buf[:]) or_return
+        if buf[2] == 0x50 do break
+    }
+    return nil
+}
 set_polling_rate :: proc (dev_handle: libusb.Device_Handle, polling_rate: PollingRate) -> libusb.Error {
     t := i32(0)
     for {
@@ -91,11 +139,13 @@ set_polling_rate :: proc (dev_handle: libusb.Device_Handle, polling_rate: Pollin
 }
 Config :: struct {
     poll:            PollingRate,
-    dpis:            [5]int,
+    dpis:            [6]int,
     active_dpi:      int,
     sleep_time:      f64,
     deep_sleep_time: int,
-    key_resp_time:   int
+    key_resp_time:   int,
+    angle_snap:     bool,
+    ripple_control:  bool,
 }
 CfgErr :: enum {
     None,
@@ -113,6 +163,10 @@ CfgErr :: enum {
     InvalidDeepSleepTime,
     KeyRespTimeNotProvided,
     InvalidKeyRespTime,
+    AngleSnapNotProvided,
+    InvalidAngleSnap,
+    RippleControlNotProvided,
+    InvalidRippleControl,
 
 }
 ConfigError :: union #shared_nil {
@@ -131,6 +185,14 @@ load_config :: proc(path: string) -> (cfg: Config, err: ConfigError) {
         val := f64(0)
         val, ok = strconv.parse_f64(strings.trim(str, " \n\t"))
         if !ok do return 0, inv_err
+        return val, nil
+    }
+    cfg_bool :: proc(cfg: ini.INI, name: string, not_prov: ConfigError, inv_err: ConfigError) -> (bool, ConfigError) {
+        str, ok := cfg[""][name]
+        if !ok do return false, not_prov
+        val := false
+        val, ok = strconv.parse_bool(strings.trim(str, " \n\t"))
+        if !ok do return false, inv_err
         return val, nil
     }
     cfg_int :: proc(cfg: ini.INI, name: string, not_prov: ConfigError, inv_err: ConfigError) -> (int, ConfigError) {
@@ -164,17 +226,17 @@ load_config :: proc(path: string) -> (cfg: Config, err: ConfigError) {
 
     i := 0
     for dpi in strings.split_by_byte_iterator(&dpis, ' ') {
-        if i >= 5 do return {}, .TooMuchDpiValues
+        if i >= 6 do return {}, .TooMuchDpiValues
 
         dpi_val, ok := strconv.parse_int(strings.trim(dpi, " \n\t"))
         if !ok || dpi_val < 100 || dpi_val > 18000 || dpi_val % 100 != 0 do return {}, .InvalidDpiValue 
         cfg.dpis[i] = dpi_val
         i += 1
     }
-    if i != 5 do return {}, .NotEnoughDpiValues
+    if i != 6 do return {}, .NotEnoughDpiValues
 
     active_dpi_val := cfg_int(ini_cfg, "active_dpi", .ActiveDpiNotProvided, .InvalidActiveDpiValue) or_return
-    if active_dpi_val < 1 || active_dpi_val > 5 do return {}, .InvalidActiveDpiValue
+    if active_dpi_val < 1 || active_dpi_val > 6 do return {}, .InvalidActiveDpiValue
     cfg.active_dpi = active_dpi_val
 
     sleep_time := cfg_float(ini_cfg, "sleep_time", .SleepTimeNotProvided, .InvalidSleepTime) or_return
@@ -191,12 +253,19 @@ load_config :: proc(path: string) -> (cfg: Config, err: ConfigError) {
     if key_resp_time < 4 || key_resp_time > 50 || key_resp_time % 2 != 0 do return {}, .InvalidKeyRespTime
     cfg.key_resp_time = key_resp_time
 
+    cfg.angle_snap     = cfg_bool(ini_cfg, "angle_snap", .AngleSnapNotProvided, .InvalidAngleSnap) or_return
+    cfg.ripple_control = cfg_bool(ini_cfg, "ripple_control", .RippleControlNotProvided, .InvalidRippleControl) or_return
+
+    
+
+
 
     return cfg, nil
 }
 apply_config :: proc(config: Config, mouse: libusb.Device_Handle) -> libusb.Error {
     set_polling_rate(mouse, config.poll) or_return
     set_times(mouse, config.sleep_time, config.deep_sleep_time, config.key_resp_time) or_return
+    set_dpis(mouse, config.dpis, config.active_dpi, config.ripple_control, config.angle_snap) or_return
     return nil
 }
 CliOptions :: struct {
@@ -207,6 +276,10 @@ CliOptions :: struct {
     deep_sleep_time: int `usage:"Set deepsleep time [1ms; 60ms]"`,
     reapply_config: bool `usage:"Reapply entire config"`,
     query_charge: bool `usage:"Output current charge"`,
+    ripple_control: string `usage:"Set ripple control(true|false)"`,
+    angle_snap: string `usage:"Set angle snap(true|false)"`,
+    dpi: map[string]int `usage:"Set dpi"`,
+    active_dpi: int `usage:"Set active dpi"`,
 } 
 DriverError :: union #shared_nil {
     ConfigError,
@@ -259,13 +332,49 @@ driver_main :: proc(opts: CliOptions , config: ^Config) -> DriverError {
         config.sleep_time = sleep_time
         times := true
     }
+    dpi := false
+
+    if len(opts.dpi) != 0 {
+        dpi = true
+        for k, v in opts.dpi {
+            num, ok := strconv.parse_int(k) 
+            if !ok do return ConfigError(.InvalidAngleSnap)
+            if num < 1 || num > 6 do return ConfigError(.InvalidDpiValue) 
+            if v < 100 || v > 18000 || v % 100 != 0 do return ConfigError(.InvalidDpiValue) 
+            config.dpis[num - 1] = v
+        }
+    }
+    if opts.active_dpi != 0 {
+        config.active_dpi = opts.active_dpi
+        dpi = true
+    }
+    if opts.angle_snap != "" {
+        ok := false
+        config.angle_snap, ok = strconv.parse_bool(opts.angle_snap)
+        if !ok do return ConfigError(.InvalidAngleSnap)
+        dpi = true
+    }
+    if opts.ripple_control != "" {
+        ok := false
+        config.ripple_control, ok = strconv.parse_bool(opts.ripple_control)
+        if !ok do return ConfigError(.InvalidRippleControl)
+        dpi = true
+    }
+
     if times do set_times(mouse, config.sleep_time, config.deep_sleep_time, config.key_resp_time) or_return
+    if dpi do set_dpis(mouse, config.dpis, config.active_dpi, config.ripple_control, config.angle_snap) or_return
+
+
 
     return nil
 }
 main :: proc () {
     opts: CliOptions = {}
-    flags.parse_or_exit(&opts, os.args, .Unix)
+    if len(os.args) == 1 {
+        flags.write_usage(os.stream_from_handle(os.stdout), typeid_of(CliOptions), os.args[0], .Odin)
+        return
+    }
+    flags.parse_or_exit(&opts, os.args, .Odin)
 
     cfg := os.get_env("XDG_CONFIG_HOME")
     if cfg == "" {
@@ -283,6 +392,7 @@ main :: proc () {
     if cfg_err != nil {
         fmt.println("ERROR while loading config:", cfg_err)
     }
+    //apply_config(config, nil)
     err := driver_main(opts, &config)
     if err != nil {
         fmt.eprintln("ERROR:", err)
