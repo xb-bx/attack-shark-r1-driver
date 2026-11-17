@@ -157,6 +157,8 @@ Config :: struct {
     key_resp_time:   int,
     angle_snap:     bool,
     ripple_control:  bool,
+    remaps:          [REMAP_BUTTON_COUNT]Remap_Assignment,
+    remaps_set:      [REMAP_BUTTON_COUNT]bool,
 }
 CfgErr :: enum {
     None,
@@ -178,6 +180,8 @@ CfgErr :: enum {
     InvalidAngleSnap,
     RippleControlNotProvided,
     InvalidRippleControl,
+    InvalidRemapButton,
+    InvalidRemapAction,
     CouldNotLoadConfig,
 
 }
@@ -265,6 +269,17 @@ load_config :: proc(path: string) -> (cfg: Config, err: ConfigError) {
     cfg.angle_snap     = cfg_bool(ini_cfg, "angle_snap", .AngleSnapNotProvided, .InvalidAngleSnap) or_return
     cfg.ripple_control = cfg_bool(ini_cfg, "ripple_control", .RippleControlNotProvided, .InvalidRippleControl) or_return
 
+    // optional button remapping: remap_left .. remap_dpi
+    for b in 0 ..< REMAP_BUTTON_COUNT {
+        key := strings.concatenate({"remap_", remap_button_names[b]})
+        if val, ok := ini_cfg[""][key]; ok {
+            assignment, ok := parse_remap_value(val)
+            if !ok do return {}, .InvalidRemapAction
+            cfg.remaps[b] = assignment
+            cfg.remaps_set[b] = true
+        }
+    }
+
 
     return cfg, nil
 }
@@ -272,6 +287,9 @@ apply_config :: proc(config: Config, mouse: libusb.Device_Handle) -> libusb.Erro
     set_polling_rate(mouse, config.poll) or_return
     set_times(mouse, config.sleep_time, config.deep_sleep_time, config.key_resp_time) or_return
     set_dpis(mouse, config.dpis, config.active_dpi, config.ripple_control, config.angle_snap) or_return
+    any_remap := false
+    for s in config.remaps_set do if s do any_remap = true
+    if any_remap do set_button_remap(mouse, config.remaps, config.remaps_set) or_return
     return nil
 }
 CliOptions :: struct {
@@ -286,7 +304,8 @@ CliOptions :: struct {
     angle_snap: string `usage:"Set angle snap(true|false)"`,
     dpi: map[string]int `usage:"Set dpi"`,
     active_dpi: int `usage:"Set active dpi"`,
-} 
+    remap: map[string]string `usage:"Remap a button( buttons: left|right|middle|forward|backward|dpi, actions: left|right|middle|forward|backward|double_click|fire_button|scroll_up|scroll_down|dpi_cycle|media_player|play_pause|previous_track|next_track|volume_up|volume_down|mute|calculator|browser_forward|... or key combos like ctrl+c, alt+tab, win+shift+s )"`,
+}
 DriverError :: union #shared_nil {
     ConfigError,
     libusb.Error,
@@ -369,8 +388,22 @@ driver_main :: proc(opts: CliOptions , config: ^Config) -> DriverError {
         dpi = true
     }
 
+    remap_changed := false
+    if len(opts.remap) != 0 {
+        remap_changed = true
+        for button_name, action_name in opts.remap {
+            button, btn_ok := parse_remap_button(button_name)
+            if !btn_ok do return ConfigError(.InvalidRemapButton)
+            assignment, act_ok := parse_remap_value(action_name)
+            if !act_ok do return ConfigError(.InvalidRemapAction)
+            config.remaps[int(button)] = assignment
+            config.remaps_set[int(button)] = true
+        }
+    }
+
     if times do set_times(mouse, config.sleep_time, config.deep_sleep_time, config.key_resp_time) or_return
     if dpi do set_dpis(mouse, config.dpis, config.active_dpi, config.ripple_control, config.angle_snap) or_return
+    if remap_changed do set_button_remap(mouse, config.remaps, config.remaps_set) or_return
 
 
 
