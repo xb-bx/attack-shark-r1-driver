@@ -1,0 +1,9 @@
+# build output
+driver
+
+# proprietary vendor software / reference material - never commit
+*.exe
+
+# nix build results
+result
+result-*

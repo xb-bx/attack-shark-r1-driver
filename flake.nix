@@ -50,6 +50,8 @@
           buildInputs = with pkgs; [
             odin
             ols 
+            libusb1
+            gnumake
           ];
         };
       }
